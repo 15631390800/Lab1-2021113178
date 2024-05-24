@@ -3,6 +3,9 @@ import tkinter as tk
 import networkx as nx
 import string
 import random
+import heapq
+from collections import defaultdict
+from collections import deque
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
@@ -12,7 +15,29 @@ def preprocess_text(text):
     # 替换非字母字符为空格
     translation_table = str.maketrans(string.punctuation, ' ' * len(string.punctuation))
     cleaned_text = text.translate(translation_table)
-    return cleaned_text
+    return cleaned_text.lower()
+
+
+def traverse_graph(graph):
+    # 初始化一个空列表存储节点名称
+    node_names = []
+
+    # 定义一个辅助函数进行深度优先搜索
+    def dfs(node):
+        # 将当前节点加入到节点名称列表中
+        node_names.append(node)
+
+        # 遍历当前节点的所有邻居节点
+        for neighbor in graph.neighbors(node):
+            # 如果邻居节点还没有被访问过,递归访问它
+            if neighbor not in node_names:
+                dfs(neighbor)
+
+    # 从图中任意一个节点开始进行深度优先搜索
+    for node in graph.nodes():
+        if node not in node_names:
+            dfs(node)
+    return node_names
 
 
 def build_directed_graph(text):
@@ -22,12 +47,19 @@ def build_directed_graph(text):
     # 创建有向图
     graph = nx.DiGraph()
 
-    # 添加节点和边
+    # 字典来存储每对相邻单词出现的次数
+    edge_weights = defaultdict(int)
+
+    # 遍历单词并记录权重
     for i in range(len(words) - 1):
         current_word = words[i].lower()
         next_word = words[i + 1].lower()
         if current_word != next_word:  # 排除自环
-            graph.add_edge(current_word, next_word)
+            edge_weights[(current_word, next_word)] += 1
+
+    # 添加节点和边到图中
+    for (current_word, next_word), weight in edge_weights.items():
+        graph.add_edge(current_word, next_word, weight=weight)
 
     return graph
 
@@ -36,26 +68,86 @@ def draw_and_save_graph(graph, output_file):
     # 创建一个新的 Figure 对象
     figure = plt.figure(figsize=(10, 6))
     pos = nx.spring_layout(graph)
+
+    # 绘制节点和边
     nx.draw(graph, pos, with_labels=True, node_color='skyblue', node_size=1500, edge_color='black', linewidths=1,
             arrowsize=20)
+
+    # 获取边的权值
+    edge_labels = nx.get_edge_attributes(graph, 'weight')
+
+    # 绘制边的权值
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
+
     plt.title("Directed Graph")
 
     # 保存图形到磁盘
     plt.savefig(output_file)
     return figure
 
+def draw_and_save_graph_1(graph, paths, output_file):
+    figure = plt.figure(figsize=(10, 6))
+    pos = nx.spring_layout(graph)
+
+    # 绘制节点和边
+    nx.draw(graph, pos, with_labels=True, node_color='skyblue', node_size=1500, edge_color='black', linewidths=1,
+            arrowsize=20)
+
+    # 获取边的权值
+    edge_labels = nx.get_edge_attributes(graph, 'weight')
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
+
+    # 高亮显示所有最短路径
+    if paths:
+        colors = plt.cm.get_cmap('tab10', len(paths))  # 使用颜色映射
+        for idx, path in enumerate(paths):
+            edges = [(path[i], path[i + 1]) for i in range(len(path) - 1)]
+            nx.draw_networkx_edges(graph, pos, edgelist=edges, edge_color=[colors(idx)], width=2.5)
+
+    plt.title("Directed Graph with Shortest Paths")
+
+    # 保存图形到磁盘
+    plt.savefig(output_file)
+    return figure
+
+
+def all_simple_paths(graph, start, goal):
+    def dfs(current, goal, path, visited, result):
+        if current == goal:
+            result.append(path[:])
+            return
+        for neighbor in graph[current]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                path.append(neighbor)
+                dfs(neighbor, goal, path, visited, result)
+                path.pop()
+                visited.remove(neighbor)
+
+    result = []
+    dfs(start, goal, [start], {start}, result)
+    return result
+
 
 def find_bridge_words(graph, word1, word2):
+    if word1 not in graph or word2 not in graph:
+        return None
+
     # 查找word1到word2的所有可能路径
-    all_paths = nx.all_simple_paths(graph, source=word1, target=word2)
+    try:
+        # all_paths = nx.all_simple_paths(graph, source=word1, target=word2)
+        all_paths = all_simple_paths(graph, word1, word2)
+    except nx.exception.NodeNotFound:
+        return None
 
     # 初始化桥接词列表
     bridge_words = []
 
     # 遍历每条路径
     for path in all_paths:
-        if len(path) == 3:
+        if len(path) == 3:  # 路径长度为3意味着有一个桥接词
             bridge_words.append(path[1])
+
     return bridge_words
 
 
@@ -63,30 +155,62 @@ def generate_by_bridge_words(graph, text):
     cleaned_text = preprocess_text(text)
     words = cleaned_text.split()
     word2add = []
+
+    # 寻找所有可能的桥接词并记录
     for i in range(len(words) - 1):
-        for j in range(i + 1, len(words) - 1):
-            bridge_words = find_bridge_words(graph, words[i], words[j])
-            if bridge_words:
-                word2add.append([words[i], words[j], random.choice(bridge_words)])
-    for triplet in word2add:
-        target_word = triplet[2]
-        first_word = triplet[0]
-        second_word = triplet[1]
-        # 找到第一个元素在s中的索引
-        try:
-            index = words.index(first_word)
-        except ValueError:
-            continue
-        # 在第一个元素后面继续搜索，直到找到第二个元素
-        if words[index + 1] == second_word:
-            # 将目标词插入到找到的位置
-            words.insert(index + 1, target_word)
+        bridge_words = find_bridge_words(graph, words[i], words[i + 1])
+        if bridge_words:
+            word2add.append((i, random.choice(bridge_words)))
+
+    # 按记录的位置插入桥接词
+    offset = 0
+    for index, bridge_word in word2add:
+        words.insert(index + 1 + offset, bridge_word)
+        offset += 1
+
     return words
 
+def all_shortest_paths(graph, start, target, weight='weight'):
+    # 使用优先队列跟踪当前节点的所有路径和距离
+    queue = [(0, start, [])]  # (累计权重, 当前节点, 路径)
+    min_dist = {start: 0}
+    all_paths = []
+
+    while queue:
+        cost, current_node, path = heapq.heappop(queue)
+        path = path + [current_node]
+
+        if current_node == target:
+            all_paths.append((cost, path))
+            continue
+
+        for neighbor, data in graph[current_node].items():
+            edge_weight = data.get(weight, 1)
+            new_cost = cost + edge_weight
+
+            if neighbor not in min_dist or new_cost <= min_dist[neighbor]:
+                min_dist[neighbor] = new_cost
+                heapq.heappush(queue, (new_cost, neighbor, path))
+
+    # 过滤出所有最短路径
+    if not all_paths:
+        return None
+
+    min_cost = min(all_paths, key=lambda x: x[0])[0]
+    shortest_paths = [path for cost, path in all_paths if cost == min_cost]
+
+    return shortest_paths
 
 def find_shortest(graph, word1, word2):
-    shortest_path = nx.shortest_path(graph, source=word1, target=word2)
-    return shortest_path
+    try:
+        # 使用Dijkstra算法查找带权图的最短路径
+        path = all_shortest_paths(graph, word1, word2, weight='weight')
+        figure = draw_and_save_graph_1(graph, path, "shortest_path.png")
+        return path
+    except nx.NetworkXNoPath:
+        return None
+    except nx.NodeNotFound:
+        return None
 
 
 def show_graph_in_window(graph, output_file):
@@ -168,13 +292,34 @@ def main():
 
     # ***************最短路径*************
     def open_shortpath_window():
+        def show_shortest_path2(graph, word1, word2):
+            shortest_path = find_shortest(graph, word1, word2)
+            for i in range(len(shortest_path)):
+                output_text2_short.insert(tk.END,
+                                        f"The shortest path from {word1} to {word2} is: {', '.join(shortest_path[i])}，len = {len(shortest_path[i])}\n")
+
+        def show_shortest_paths(graph, word):
+            node_names = traverse_graph(graph)
+            node_names.remove(word)
+            for node in node_names:
+                show_shortest_path2(graph, word, node)
+
         def show_shortest_path(graph):
             word1 = input_entry3.get().lower()
             word2 = input_entry4.get().lower()
-            shortest_path = find_shortest(graph, word1, word2)
-            output_text_short.delete("1.0", tk.END)  # 清空原有内容
-            output_text_short.insert(tk.END,
-                                     f"The shortest path from {word1} to {word2} is: {', '.join(shortest_path)}\n")
+            if (word1 == ''):
+                output_text2_short.delete("1.0", tk.END)  # 清空原有内容
+                show_shortest_paths(graph, word2)
+            elif (word2 == ''):
+                output_text2_short.delete("1.0", tk.END)  # 清空原有内容
+                show_shortest_paths(graph, word1)
+            
+            else:
+                shortest_path = find_shortest(graph, word1, word2)
+                output_text_short.delete("1.0", tk.END)  # 清空原有内容
+                for i in range(len(shortest_path)):
+                    output_text_short.insert(tk.END,
+                                            f"The shortest path from {word1} to {word2} is: {', '.join(shortest_path[i])}，len = {len(shortest_path[i])}\n")
 
         # 创建一个新的 Toplevel 窗口
         scrollable_window = tk.Toplevel(root)
@@ -209,6 +354,9 @@ def main():
 
         output_text_short = tk.Text(output_frame_short_path, height=5, width=50)
         output_text_short.pack()
+
+        output_text2_short = tk.Text(output_frame_short_path, height=60, width=50)
+        output_text2_short.pack()
 
         # 设置 Toplevel 窗口的大小
         scrollable_window.geometry("800x600")
