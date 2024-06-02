@@ -11,6 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
 
 
+
 def preprocess_text(text):
     # 替换非字母字符为空格
     translation_table = str.maketrans(string.punctuation, ' ' * len(string.punctuation))
